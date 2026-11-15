@@ -1,4 +1,5 @@
 pub mod probe;
+pub mod vips;
 
 use std::path::{Path, PathBuf};
 

@@ -50,6 +50,15 @@ impl Sandbox {
         Ok(canon)
     }
 
+    /// Scratch directory inside the workspace for intermediate files; the caller removes it.
+    pub async fn make_temp_dir(&self) -> Result<PathBuf> {
+        let dir = self.root.join(format!(".tmp-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir(&dir)
+            .await
+            .map_err(|e| Error::io(&dir, e))?;
+        Ok(dir)
+    }
+
     /// Path for a file that does not exist yet: a bare file name directly inside the root.
     pub async fn new_path(&self, file_name: &str) -> Result<PathBuf> {
         reject_url(file_name)?;
