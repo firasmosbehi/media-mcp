@@ -1,15 +1,20 @@
 use std::sync::Arc;
 
 use rmcp::{
-    ServerHandler, handler::server::wrapper::Parameters, model::CallToolResult, tool, tool_handler,
-    tool_router,
+    RoleServer, ServerHandler, handler::server::wrapper::Parameters, model::CallToolResult,
+    service::RequestContext, tool, tool_handler, tool_router,
 };
 
 use crate::{
     assets::Assets,
     engine::Engines,
+    jobs::Jobs,
     tools::{
-        self, error_result, image_edit::ImageEditInput, preview::PreviewInput, probe::ProbeInput,
+        self, error_result,
+        image_edit::ImageEditInput,
+        jobs::{JobCancelInput, JobStatusInput},
+        preview::PreviewInput,
+        probe::ProbeInput,
         to_result,
     },
 };
@@ -19,13 +24,15 @@ use crate::{
 pub struct MediaServer {
     pub assets: Assets,
     pub engines: Arc<Engines>,
+    pub jobs: Jobs,
 }
 
 impl MediaServer {
-    pub fn new(assets: Assets, engines: Engines) -> Self {
+    pub fn new(assets: Assets, engines: Engines, jobs: Jobs) -> Self {
         Self {
             assets,
             engines: Arc::new(engines),
+            jobs,
         }
     }
 }
@@ -40,10 +47,34 @@ impl MediaServer {
     }
 
     #[tool(
-        description = "Edit a photo (PNG, JPEG, WebP, ...) with an ordered list of operations (crop, resize, rotate, flip, color, blur, text, overlay) and save the result as a new asset; the original is never modified. Use this for every photo change; use video_edit for video. Pass asset_id or import_path for the source. Operations run in order, so crop before resize, etc.; overlay takes another image as asset_id or import_path. `export` picks format (jpeg, png, webp), quality, metadata stripping and an optional output_name. Returns the new asset_id, path, format, dimensions and size. Check the result with preview."
+        description = "Edit a photo (PNG, JPEG, WebP, ...) with an ordered list of operations (crop, resize, rotate, flip, color, blur, text, overlay) and save the result as a new asset; the original is never modified. Use this for every photo change; use video_edit for video. Pass asset_id or import_path for the source. Operations run in order, so crop before resize, etc.; overlay takes another image as asset_id or import_path. `export` picks format (jpeg, png, webp), quality, metadata stripping and an optional output_name. Returns the new asset_id, path, format, dimensions and size. Check the result with preview. Runs as a job: this returns a job_id immediately; call job_status (with wait_secs) to get the result."
     )]
     async fn image_edit(&self, Parameters(input): Parameters<ImageEditInput>) -> CallToolResult {
-        to_result(tools::image_edit::run(self, input).await)
+        let server = self.clone();
+        let started = self.jobs.submit(move |progress| async move {
+            let info = tools::image_edit::run(&server, input, progress).await?;
+            serde_json::to_value(info).map_err(|e| crate::error::Error::InvalidInput(e.to_string()))
+        });
+        to_result(Ok(started))
+    }
+
+    #[tool(
+        description = "Get the state of a job started by another tool: queued, running, succeeded, failed or cancelled, with progress (0-1), and the result (e.g. the new asset) once succeeded or the error message once failed. Pass wait_secs (up to 30) to block until the job finishes instead of polling. Use job_cancel to stop a job."
+    )]
+    async fn job_status(
+        &self,
+        Parameters(input): Parameters<JobStatusInput>,
+        ctx: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        let sink = ctx.meta.get_progress_token().map(|t| (ctx.peer.clone(), t));
+        to_result(tools::jobs::status(self, input, sink).await)
+    }
+
+    #[tool(
+        description = "Cancel a queued or running job: stops the underlying process and deletes any partial output. Cancelling a job that already finished changes nothing. Returns the job's final state."
+    )]
+    async fn job_cancel(&self, Parameters(input): Parameters<JobCancelInput>) -> CallToolResult {
+        to_result(tools::jobs::cancel(self, input))
     }
 
     #[tool(

@@ -11,6 +11,8 @@ pub enum Error {
         name: &'static str,
         env: &'static str,
     },
+    #[error("unknown job id: {0}")]
+    JobNotFound(String),
     #[error("invalid input: {0}")]
     InvalidInput(String),
     #[error("{program} failed ({status}):\n{stderr_tail}")]

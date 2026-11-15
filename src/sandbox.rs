@@ -8,6 +8,33 @@ pub struct Sandbox {
     root: PathBuf,
 }
 
+/// Deletes a file or directory when dropped, including when the owning future is aborted
+/// (job cancel or timeout). Call `disarm` once the path has been renamed into its final place.
+pub struct Scratch(Option<PathBuf>);
+
+impl Scratch {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Scratch(Some(path.into()))
+    }
+
+    pub fn disarm(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        if let (Some(p), Ok(rt)) = (self.0.take(), tokio::runtime::Handle::try_current()) {
+            // Not awaited: Drop cannot block the runtime.
+            rt.spawn(async move {
+                if tokio::fs::remove_dir_all(&p).await.is_err() {
+                    let _ = tokio::fs::remove_file(&p).await;
+                }
+            });
+        }
+    }
+}
+
 /// Network URLs and protocol-style inputs are never valid paths.
 pub fn reject_url(s: &str) -> Result<()> {
     if s.contains("://") || s.starts_with("data:") || s.contains('\0') {

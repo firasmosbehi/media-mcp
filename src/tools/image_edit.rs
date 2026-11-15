@@ -9,6 +9,8 @@ use crate::{
         vips::{self, EditJob, Export, ImageFormat, ImageOp, MAX_DIM},
     },
     error::{Error, Result},
+    jobs::Progress,
+    sandbox::Scratch,
     server::MediaServer,
 };
 
@@ -65,7 +67,11 @@ fn valid_stem(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
-pub async fn run(server: &MediaServer, input: ImageEditInput) -> Result<AssetInfo> {
+pub async fn run(
+    server: &MediaServer,
+    input: ImageEditInput,
+    progress: Progress,
+) -> Result<AssetInfo> {
     let (_, src) = input.source.resolve(&server.assets).await?;
     let src_info = probe::probe(&server.engines, &src).await?;
     if src_info.kind != MediaKind::Image {
@@ -119,7 +125,9 @@ pub async fn run(server: &MediaServer, input: ImageEditInput) -> Result<AssetInf
             strip_metadata: input.export.strip_metadata,
         },
         output: &tmp,
+        progress,
     };
+    let scratch = Scratch::new(&tmp); // removed on failure or cancel
     let finish = async {
         vips::edit(&server.engines, sandbox, job).await?;
         let info = probe::probe(&server.engines, &tmp).await?;
@@ -135,13 +143,8 @@ pub async fn run(server: &MediaServer, input: ImageEditInput) -> Result<AssetInf
             .map_err(|e| Error::io(&dest, e))?;
         Ok(info)
     };
-    let info = match finish.await {
-        Ok(i) => i,
-        Err(e) => {
-            let _ = tokio::fs::remove_file(&tmp).await;
-            return Err(e);
-        }
-    };
+    let info = finish.await?;
+    scratch.disarm();
     let asset_id = server.assets.register(&dest).await?;
     Ok(AssetInfo {
         asset_id,

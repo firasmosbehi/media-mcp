@@ -1,6 +1,6 @@
 mod common;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use common::{Server, pixel, rgb_pixels};
+use common::{Server, debris, pixel, rgb_pixels};
 use serde_json::{Value, json};
 
 fn path_of(v: &Value) -> std::path::PathBuf {
@@ -18,7 +18,7 @@ fn geometry_ops() {
     let Some(mut s) = Server::start() else { return };
     let img = s.fixture("a.png", PNG);
     let edit = |s: &mut Server, ops: Value| {
-        s.ok("image_edit", json!({"import_path": img, "operations": ops}))
+        s.job_ok("image_edit", json!({"import_path": img, "operations": ops}))
     };
 
     let r = edit(
@@ -61,11 +61,11 @@ fn geometry_ops() {
     );
     // JPEG source: goes through autorot, keeps its format by default.
     let jpg = s.fixture("a.jpg", PNG);
-    let r = s.ok("image_edit", json!({"import_path": jpg, "operations": [{"op":"crop","x":10,"y":10,"width":80,"height":40}]}));
+    let r = s.job_ok("image_edit", json!({"import_path": jpg, "operations": [{"op":"crop","x":10,"y":10,"width":80,"height":40}]}));
     assert_eq!(dims(&r), (80, 40));
     assert!(path_of(&r).extension().unwrap() == "jpg");
     // empty operations list just converts format
-    let r = s.ok(
+    let r = s.job_ok(
         "image_edit",
         json!({"import_path": img, "export": {"format": "jpeg"}}),
     );
@@ -93,7 +93,7 @@ fn pixel_ops_text_overlay_color() {
     );
 
     // Overlay a red square at (10,10): its centre is red, elsewhere stays black.
-    let r = s.ok(
+    let r = s.job_ok(
         "image_edit",
         json!({"import_path": black, "operations": [{"op":"overlay","import_path": red,"x":10,"y":10}], "export":{"format":"png"}}),
     );
@@ -103,7 +103,7 @@ fn pixel_ops_text_overlay_color() {
     assert_eq!(pixel(&p, 200, 150, 80), [0, 0, 0]);
 
     // Text: white glyphs appear on a black canvas.
-    let r = s.ok(
+    let r = s.job_ok(
         "image_edit",
         json!({"asset_id": r["asset_id"], "operations": [{"op":"text","text":"Hi & <b>","x":60,"y":30,"size":40}], "export":{"format":"png"}}),
     );
@@ -115,7 +115,7 @@ fn pixel_ops_text_overlay_color() {
 
     // Grayscale: every pixel has r == g == b.
     let colour = s.fixture("c.png", PNG);
-    let r = s.ok(
+    let r = s.job_ok(
         "image_edit",
         json!({"import_path": colour, "operations": [{"op":"color","grayscale":true}]}),
     );
@@ -131,11 +131,11 @@ fn pixel_ops_text_overlay_color() {
         &["-f", "lavfi", "-i", "color=gray:s=20x20", "-frames:v", "1"],
     );
     let before = pixel(&grey, 20, 5, 5)[0] as i32;
-    let r = s.ok("image_edit", json!({"import_path": grey, "operations": [{"op":"color","brightness":0.2}], "export":{"format":"png"}}));
+    let r = s.job_ok("image_edit", json!({"import_path": grey, "operations": [{"op":"color","brightness":0.2}], "export":{"format":"png"}}));
     assert!(pixel(&path_of(&r), 20, 5, 5)[0] as i32 > before + 30);
 
     // Blur, flip and a 30-degree rotate with a JPEG export of an image with alpha all run.
-    let r = s.ok(
+    let r = s.job_ok(
         "image_edit",
         json!({"asset_id": r["asset_id"], "operations": [
             {"op":"blur","sigma":2.0},{"op":"flip","direction":"horizontal"},{"op":"rotate","degrees":30}
@@ -150,65 +150,46 @@ fn naming_overwrite_and_failures_leave_no_debris() {
     let Some(mut s) = Server::start() else { return };
     let img = s.fixture("a.png", PNG);
 
-    let a = s.ok(
+    let a = s.job_ok(
         "image_edit",
         json!({"import_path": img, "export": {"output_name": "out1"}}),
     );
     assert_eq!(path_of(&a).file_name().unwrap(), "out1.png");
 
-    let dup = s.tool(
+    let dup = s.job_err(
         "image_edit",
         json!({"asset_id": a["asset_id"], "export": {"output_name": "out1"}}),
     );
-    assert_eq!(dup["isError"], true);
-    assert!(
-        dup["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("overwrite")
-    );
-    s.ok(
+    assert!(dup.contains("overwrite"), "{dup}");
+    s.job_ok(
         "image_edit",
         json!({"asset_id": a["asset_id"], "export": {"output_name": "out1", "overwrite": true}}),
     );
 
-    // Failing steps surface vips's message as a tool error and leave nothing behind.
-    let bad = s.tool("image_edit", json!({"asset_id": a["asset_id"], "operations": [{"op":"crop","x":190,"y":90,"width":50,"height":50}]}));
-    assert_eq!(bad["isError"], true);
-    assert!(
-        bad["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("bad extract area")
+    // Failing steps surface vips's message in the job error and leave nothing behind.
+    let bad = s.job_err(
+        "image_edit",
+        json!({"asset_id": a["asset_id"], "operations": [{"op":"crop","x":190,"y":90,"width":50,"height":50}]}),
     );
+    assert!(bad.contains("bad extract area"), "{bad}");
     for bad_args in [
         json!({"asset_id": a["asset_id"], "operations": [{"op":"resize"}]}),
         json!({"asset_id": a["asset_id"], "export": {"output_name": "../x"}}),
         json!({"asset_id": a["asset_id"], "export": {"quality": 0}}),
         json!({"asset_id": "nope"}),
     ] {
-        assert_eq!(
-            s.tool("image_edit", bad_args.clone())["isError"],
-            true,
-            "{bad_args}"
-        );
+        s.job_err("image_edit", bad_args);
     }
-    let leftovers: Vec<String> = std::fs::read_dir(s.workspace())
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|n| n.starts_with('.'))
-        .collect();
-    assert!(leftovers.is_empty(), "debris: {leftovers:?}");
+    let left = debris(&s.workspace());
+    assert!(left.is_empty(), "debris: {left:?}");
 }
 
 #[test]
 fn image_edit_rejects_video_and_preview_downscales() {
     let Some(mut s) = Server::start() else { return };
     let vid = s.fixture("v.mp4", &["-f", "lavfi", "-i", "testsrc=d=1:s=64x48:r=10"]);
-    assert_eq!(
-        s.tool("image_edit", json!({"import_path": vid}))["isError"],
-        true
-    );
+    let e = s.job_err("image_edit", json!({"import_path": vid}));
+    assert!(e.contains("only handles images"), "{e}");
     assert_eq!(
         s.tool("preview", json!({"import_path": vid}))["isError"],
         true

@@ -11,6 +11,8 @@ use crate::{
         vips::{self, EditJob, Export, ImageFormat, ImageOp, ResizeMode},
     },
     error::{Error, Result},
+    jobs::Progress,
+    sandbox::Scratch,
     server::MediaServer,
 };
 
@@ -51,13 +53,14 @@ pub async fn run(server: &MediaServer, input: PreviewInput) -> Result<CallToolRe
             strip_metadata: true,
         },
         output: &tmp,
+        progress: Progress::default(),
     };
+    let _cleanup = Scratch::new(&tmp);
     let bytes = async {
         vips::edit(&server.engines, sandbox, job).await?;
         tokio::fs::read(&tmp).await.map_err(|e| Error::io(&tmp, e))
     }
     .await;
-    let _ = tokio::fs::remove_file(&tmp).await;
     let bytes = bytes?;
     let meta = serde_json::to_string(&AssetInfo {
         asset_id,

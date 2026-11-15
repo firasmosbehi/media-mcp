@@ -9,7 +9,7 @@ use serde::Deserialize;
 
 use crate::{
     error::{Error, Result},
-    sandbox::{Sandbox, reject_url},
+    sandbox::{Sandbox, Scratch, reject_url},
 };
 
 /// Reference to a media file. Give exactly one field.
@@ -73,9 +73,11 @@ impl Assets {
             None => id.clone(),
         };
         let dest = self.sandbox.new_path(&name).await?;
+        let partial = Scratch::new(&dest); // a cancelled or failed copy must not leave a stub
         tokio::fs::copy(&src, &dest)
             .await
             .map_err(|e| Error::io(&dest, e))?;
+        partial.disarm();
         self.insert(id.clone(), dest.clone());
         Ok((id, dest))
     }

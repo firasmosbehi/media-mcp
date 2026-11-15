@@ -17,7 +17,8 @@ use super::{Engines, stderr_tail};
 use crate::{
     assets::AssetRef,
     error::{Error, Result},
-    sandbox::Sandbox,
+    jobs::Progress,
+    sandbox::{Sandbox, Scratch},
 };
 
 /// Largest width or height the server will produce.
@@ -455,6 +456,8 @@ pub struct EditJob<'a> {
     pub export: Export,
     /// Where the exported file is written; its extension selects the format.
     pub output: &'a Path,
+    /// Updated after each operation; use `Progress::default()` if nobody is watching.
+    pub progress: Progress,
 }
 
 /// Run an edit: one vips call per step, scratch files in a temp dir that is always removed.
@@ -463,9 +466,8 @@ pub async fn edit(engines: &Engines, sandbox: &Sandbox, job: EditJob<'_>) -> Res
         return Err(bad(format!("at most {MAX_OPS} operations per call")));
     }
     let work = sandbox.make_temp_dir().await?;
-    let result = edit_in(engines, &work, &job).await;
-    let _ = tokio::fs::remove_dir_all(&work).await;
-    result
+    let _cleanup = Scratch::new(&work); // also runs if the job is cancelled mid-way
+    edit_in(engines, &work, &job).await
 }
 
 async fn edit_in(engines: &Engines, work: &Path, job: &EditJob<'_>) -> Result<()> {
@@ -508,6 +510,8 @@ async fn edit_in(engines: &Engines, work: &Path, job: &EditJob<'_>) -> Result<()
             run_vips(engines, work, step).await?;
         }
         cur = next;
+        job.progress
+            .set((index + 1) as f32 / (job.ops.len() + 1) as f32);
     }
     let bands = if job.export.format == ImageFormat::Jpeg {
         header_bands(engines, &cur).await?
