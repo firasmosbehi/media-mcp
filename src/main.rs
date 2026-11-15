@@ -1,4 +1,4 @@
-// Phase 1 plumbing is consumed by tools from phase 2 on; remove this allow then.
+// Sandbox/asset/engine plumbing is only partly used until the photo and video tools land (phases 3-5); remove then.
 #![allow(dead_code)]
 
 mod assets;
@@ -6,6 +6,7 @@ mod engine;
 mod error;
 mod sandbox;
 mod server;
+mod tools;
 
 use assets::Assets;
 use engine::Engines;

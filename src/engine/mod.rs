@@ -1,3 +1,5 @@
+pub mod probe;
+
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
@@ -29,6 +31,13 @@ impl Engines {
     }
 }
 
+/// Last ~20 lines of an engine's stderr, for error messages the model can act on.
+pub fn stderr_tail(stderr: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(20)..].join("\n")
+}
+
 fn find_in(dirs: &[PathBuf], name: &str) -> Option<PathBuf> {
     dirs.iter().map(|d| d.join(name)).find(|p| is_executable(p))
 }
@@ -43,6 +52,14 @@ fn is_executable(p: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stderr_tail_keeps_last_20_lines() {
+        let input: String = (1..=30).map(|i| format!("line{i}\n")).collect();
+        let tail = stderr_tail(input.as_bytes());
+        assert_eq!(tail.lines().count(), 20);
+        assert!(tail.starts_with("line11") && tail.ends_with("line30"));
+    }
 
     #[test]
     fn find_in_skips_missing_and_non_executable() {

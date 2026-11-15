@@ -11,6 +11,19 @@ pub enum Error {
         name: &'static str,
         env: &'static str,
     },
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
+    #[error("{program} failed ({status}):\n{stderr_tail}")]
+    Engine {
+        program: &'static str,
+        status: String,
+        stderr_tail: String,
+    },
+    #[error("could not parse {program} output: {detail}")]
+    Parse {
+        program: &'static str,
+        detail: String,
+    },
     #[error("io error on {path}: {source}")]
     Io {
         path: PathBuf,
