@@ -1,8 +1,30 @@
-use rmcp::tool_router;
+use std::sync::Arc;
 
-/// MCP server state. Shared state (jobs, assets, config) will live here behind `Arc`.
-#[derive(Clone, Default)]
-pub struct MediaServer;
+use rmcp::{ServerHandler, tool_handler, tool_router};
 
-#[tool_router(server_handler, allow_empty)]
+use crate::{assets::Assets, engine::Engines};
+
+/// MCP server state, shared by all tool handlers.
+#[derive(Clone)]
+pub struct MediaServer {
+    pub assets: Assets,
+    pub engines: Arc<Engines>,
+}
+
+impl MediaServer {
+    pub fn new(assets: Assets, engines: Engines) -> Self {
+        Self {
+            assets,
+            engines: Arc::new(engines),
+        }
+    }
+}
+
+#[tool_router(allow_empty)]
 impl MediaServer {}
+
+#[tool_handler(
+    name = "media-mcp",
+    instructions = "Edit and generate photos and videos. Import files first, then pass asset IDs to tools."
+)]
+impl ServerHandler for MediaServer {}

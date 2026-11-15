@@ -1,6 +1,16 @@
+// Phase 1 plumbing is consumed by tools from phase 2 on; remove this allow then.
+#![allow(dead_code)]
+
+mod assets;
+mod engine;
+mod error;
+mod sandbox;
 mod server;
 
+use assets::Assets;
+use engine::Engines;
 use rmcp::{ServiceExt, transport::stdio};
+use sandbox::Sandbox;
 use server::MediaServer;
 
 #[tokio::main]
@@ -12,8 +22,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_ansi(false)
         .init();
 
-    tracing::info!("media-mcp starting");
-    let service = MediaServer.serve(stdio()).await?;
+    let workspace = std::env::var("MEDIA_MCP_WORKSPACE").unwrap_or_else(|_| "./workspace".into());
+    let sandbox = Sandbox::new(&workspace).await?;
+    let engines = Engines::detect()?;
+    tracing::info!(workspace = %sandbox.root().display(), ?engines, "media-mcp starting");
+    let service = MediaServer::new(Assets::new(sandbox), engines)
+        .serve(stdio())
+        .await?;
     service.waiting().await?;
     Ok(())
 }
