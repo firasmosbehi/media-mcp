@@ -59,7 +59,7 @@ impl Default for ExportSettings {
     }
 }
 
-fn valid_stem(s: &str) -> bool {
+pub(crate) fn valid_stem(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 100
         && !s.starts_with('.')

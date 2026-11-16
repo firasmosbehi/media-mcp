@@ -16,6 +16,7 @@ use crate::{
         preview::PreviewInput,
         probe::ProbeInput,
         to_result,
+        video_edit::VideoEditInput,
     },
 };
 
@@ -59,6 +60,18 @@ impl MediaServer {
     }
 
     #[tool(
+        description = "Edit a video with an ordered list of operations (trim, crop, resize, rotate, flip, speed, color, text, overlay) compiled into one ffmpeg render, and save the result as a new asset; the original is never modified. Use this for every video change; use image_edit for photos. Pass asset_id or import_path for the source. Operations run in order, so trim before speed refers to original time; overlay takes an image as asset_id or import_path; audio follows trim and speed automatically. `export` picks mp4 (H.264+AAC) or webm (VP9+Opus), crf quality, an optional output_name, and `stream_copy: true` for an instant lossless cut when the only operation is one trim (cuts then snap to keyframes). Runs as a job: this returns a job_id immediately; call job_status with wait_secs for progress and the result (new asset_id, path, dimensions, duration, size). Check the result with preview."
+    )]
+    async fn video_edit(&self, Parameters(input): Parameters<VideoEditInput>) -> CallToolResult {
+        let server = self.clone();
+        let started = self.jobs.submit(move |progress| async move {
+            let info = tools::video_edit::run(&server, input, progress).await?;
+            serde_json::to_value(info).map_err(|e| crate::error::Error::InvalidInput(e.to_string()))
+        });
+        to_result(Ok(started))
+    }
+
+    #[tool(
         description = "Get the state of a job started by another tool: queued, running, succeeded, failed or cancelled, with progress (0-1), and the result (e.g. the new asset) once succeeded or the error message once failed. Pass wait_secs (up to 30) to block until the job finishes instead of polling. Use job_cancel to stop a job."
     )]
     async fn job_status(
@@ -78,7 +91,7 @@ impl MediaServer {
     }
 
     #[tool(
-        description = "Look at an image: returns one downscaled JPEG (at most 1024 px on the long edge) as image content, plus the asset's info. Use it to verify the result of image_edit or to see what an imported photo contains. Images only for now. Never modifies the asset."
+        description = "Look at an image or a video frame: returns one downscaled JPEG (at most 1024 px on the long edge) as image content, plus the asset's info. For a video pass at_secs to pick the moment (default: the middle). Use it to verify the result of image_edit or video_edit, or to see what an imported file contains. Never modifies the asset."
     )]
     async fn preview(&self, Parameters(input): Parameters<PreviewInput>) -> CallToolResult {
         match tools::preview::run(self, input).await {

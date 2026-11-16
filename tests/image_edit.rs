@@ -190,8 +190,9 @@ fn image_edit_rejects_video_and_preview_downscales() {
     let vid = s.fixture("v.mp4", &["-f", "lavfi", "-i", "testsrc=d=1:s=64x48:r=10"]);
     let e = s.job_err("image_edit", json!({"import_path": vid}));
     assert!(e.contains("only handles images"), "{e}");
+    let aud = s.fixture("a.m4a", &["-f", "lavfi", "-i", "sine=d=1"]);
     assert_eq!(
-        s.tool("preview", json!({"import_path": vid}))["isError"],
+        s.tool("preview", json!({"import_path": aud}))["isError"],
         true
     );
 

@@ -2,7 +2,7 @@
 
 An MCP server (Rust, stdio) that lets an AI client edit and generate photos and videos by orchestrating ffmpeg and libvips.
 
-**Status:** early development (phase 4 of [the plan](docs/PLAN.md): photo tools and the job system work). See [docs/PLAN.md](docs/PLAN.md) and [CLAUDE.md](CLAUDE.md).
+**Status:** early development (phase 5 of [the plan](docs/PLAN.md): photo tools, jobs and `video_edit` work; `audio_edit` and `video_compose` are next). See [docs/PLAN.md](docs/PLAN.md) and [CLAUDE.md](CLAUDE.md).
 
 ## Tools
 
@@ -10,7 +10,8 @@ An MCP server (Rust, stdio) that lets an AI client edit and generate photos and 
 |------|---------|
 | `probe` | Inspect an image/video/audio file (ffprobe). Accepts `asset_id` or `import_path`; returns asset ID, path, kind, size, dimensions, duration, codecs. |
 | `image_edit` | Edit a photo with an ordered list of operations (crop, resize, rotate, flip, color, blur, text, overlay) via libvips; exports JPEG/PNG/WebP as a new asset. Runs as a job. |
-| `preview` | Return one downscaled JPEG (max 1024 px) of an image so the model can see it. Images only for now. |
+| `preview` | Return one downscaled JPEG (max 1024 px) of an image, or of a video frame (`at_secs`, default the middle), so the model can see it. |
+| `video_edit` | Edit a video with an ordered list of operations (trim, crop, resize, rotate, flip, speed, color, text, overlay) compiled into one ffmpeg render; audio follows trim/speed. Exports mp4 (H.264+AAC) or webm (VP9+Opus); `stream_copy` gives an instant lossless cut for a lone trim. Runs as a job with progress. |
 | `job_status` | State, progress and result/error of a job. `wait_secs` (max 30) blocks until it finishes; sends MCP progress notifications if the request has a progress token. |
 | `job_cancel` | Cancel a queued or running job: kills the process, deletes partial output. |
 

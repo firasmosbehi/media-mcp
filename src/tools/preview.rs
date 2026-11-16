@@ -7,6 +7,7 @@ use super::AssetInfo;
 use crate::{
     assets::AssetRef,
     engine::{
+        ffmpeg,
         probe::{self, MediaKind},
         vips::{self, EditJob, Export, ImageFormat, ImageOp, ResizeMode},
     },
@@ -23,17 +24,39 @@ const PREVIEW_PX: u32 = 1024;
 pub struct PreviewInput {
     #[serde(flatten)]
     pub source: AssetRef,
+    /// For videos: the moment to show, in seconds. Default: the middle of the clip. Ignored for images.
+    pub at_secs: Option<f64>,
 }
 
 pub async fn run(server: &MediaServer, input: PreviewInput) -> Result<CallToolResult> {
     let (asset_id, src) = input.source.resolve(&server.assets).await?;
     let info = probe::probe(&server.engines, &src).await?;
-    if info.kind != MediaKind::Image {
-        return Err(Error::InvalidInput(
-            "preview currently supports images only; video frames are not implemented yet".into(),
-        ));
-    }
     let sandbox = server.assets.sandbox();
+    // Videos: pull one frame into a scratch PNG, then downscale it like any image.
+    let frame = match info.kind {
+        MediaKind::Image => None,
+        MediaKind::Video => {
+            let dur = info.duration_secs.unwrap_or(0.0);
+            let at = input.at_secs.unwrap_or(dur / 2.0);
+            if !(at.is_finite() && at >= 0.0) || (dur > 0.0 && at >= dur) {
+                return Err(Error::InvalidInput(format!(
+                    "at_secs must be between 0 and the duration ({dur:.2}s)"
+                )));
+            }
+            let png = sandbox
+                .new_path(&format!(".{}.frame.png", uuid::Uuid::new_v4()))
+                .await?;
+            let guard = Scratch::new(&png);
+            ffmpeg::extract_frame(&server.engines, &src, at, &png).await?;
+            Some((png, guard))
+        }
+        MediaKind::Audio => {
+            return Err(Error::InvalidInput(
+                "preview needs an image or a video; this file is audio".into(),
+            ));
+        }
+    };
+    let vips_src = frame.as_ref().map_or(&src, |(p, _)| p);
     let tmp = sandbox
         .new_path(&format!(".{}.preview.jpg", uuid::Uuid::new_v4()))
         .await?;
@@ -44,7 +67,7 @@ pub async fn run(server: &MediaServer, input: PreviewInput) -> Result<CallToolRe
         upscale: false,
     }];
     let job = EditJob {
-        input: &src,
+        input: vips_src,
         overlays: vec![],
         ops: &ops,
         export: Export {

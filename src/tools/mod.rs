@@ -2,6 +2,7 @@ pub mod image_edit;
 pub mod jobs;
 pub mod preview;
 pub mod probe;
+pub mod video_edit;
 
 use std::path::PathBuf;
 

@@ -131,3 +131,59 @@ fn cancel_kills_process_and_removes_partial_output() {
     assert_eq!(st["state"], "cancelled");
     assert!(st["result"].is_null());
 }
+
+#[test]
+fn cancel_kills_ffmpeg_and_removes_partial_output() {
+    let Some(mut s) = Server::start() else { return };
+    // 90 s of 720p: far more encoding than the few seconds we let it run.
+    let v = s.fixture(
+        "long.mp4",
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=d=90:s=1280x720:r=30",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+        ],
+    );
+    let ws = s.workspace().to_string_lossy().into_owned();
+    let id = s.start_job(
+        "video_edit",
+        json!({"import_path": v, "operations": [{"op":"color","contrast":1.2}], "export": {"crf": 18}}),
+    );
+    let t = Instant::now();
+    // Wait for real encoding: ffmpeg is running and has produced some progress.
+    loop {
+        let st = s.ok("job_status", json!({"job_id": id}));
+        assert_eq!(st["state"], "running", "{st}");
+        if st["progress"].as_f64().unwrap() > 0.0 {
+            break;
+        }
+        assert!(t.elapsed() < Duration::from_secs(60), "no progress: {st}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(
+        s.ok("job_cancel", json!({"job_id": id}))["state"],
+        "cancelled"
+    );
+
+    let t = Instant::now();
+    loop {
+        if processes_mentioning(&ws) == 0 && debris(&s.workspace()).is_empty() {
+            break;
+        }
+        assert!(
+            t.elapsed() < Duration::from_secs(5),
+            "after cancel: {} processes, debris {:?}",
+            processes_mentioning(&ws),
+            debris(&s.workspace())
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // Only the imported source is left; no half-written output asset.
+    let files: Vec<_> = std::fs::read_dir(s.workspace()).unwrap().collect();
+    assert_eq!(files.len(), 1, "{files:?}");
+}
