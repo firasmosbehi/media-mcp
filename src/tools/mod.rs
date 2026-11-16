@@ -1,4 +1,7 @@
 pub mod audio_edit;
+pub mod generate_image;
+pub mod generate_video;
+pub mod image_compose;
 pub mod image_edit;
 pub mod jobs;
 pub mod preview;

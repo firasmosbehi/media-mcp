@@ -1,6 +1,7 @@
 pub mod audio;
 pub mod compose;
 pub mod ffmpeg;
+pub mod generate;
 pub mod probe;
 pub mod vips;
 

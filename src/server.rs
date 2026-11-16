@@ -13,6 +13,9 @@ use crate::{
         self,
         audio_edit::AudioEditInput,
         error_result,
+        generate_image::GenerateImageInput,
+        generate_video::GenerateVideoInput,
+        image_compose::ImageComposeInput,
         image_edit::ImageEditInput,
         jobs::{JobCancelInput, JobStatusInput},
         preview::PreviewInput,
@@ -96,6 +99,51 @@ impl MediaServer {
         let server = self.clone();
         let started = self.jobs.submit(move |progress| async move {
             let info = tools::video_compose::run(&server, input, progress).await?;
+            serde_json::to_value(info).map_err(|e| crate::error::Error::InvalidInput(e.to_string()))
+        });
+        to_result(Ok(started))
+    }
+
+    #[tool(
+        description = "Arrange several photos into one image: a grid or contact sheet. Pass images as asset_ids or import_paths in reading order; columns sets the row length (default: roughly square), cell_width/cell_height the box each photo is fitted into (aspect ratio kept, centred), gap the spacing and background the fill colour. `export` picks png (default), jpeg or webp, quality and an optional output_name. Use image_edit to change a single photo. Returns the new asset_id, path, dimensions and size. Runs as a job: this returns a job_id immediately; call job_status with wait_secs for the result."
+    )]
+    async fn image_compose(
+        &self,
+        Parameters(input): Parameters<ImageComposeInput>,
+    ) -> CallToolResult {
+        let server = self.clone();
+        let started = self.jobs.submit(move |_| async move {
+            let info = tools::image_compose::run(&server, input).await?;
+            serde_json::to_value(info).map_err(|e| crate::error::Error::InvalidInput(e.to_string()))
+        });
+        to_result(Ok(started))
+    }
+
+    #[tool(
+        description = "Create a new image from nothing: a solid colour or a linear gradient of a given size, saved as a new asset (png by default). Procedural only, no AI generation. Use it for backgrounds, colour swatches or placeholders; add text or logos afterwards with image_edit, or combine with image_compose. `fill` is {type:'solid',color:'#RRGGBB'} or {type:'gradient',from,to,direction:'horizontal'|'vertical'}. Returns the new asset_id, path, dimensions and size. Runs as a job: this returns a job_id immediately; call job_status with wait_secs for the result."
+    )]
+    async fn generate_image(
+        &self,
+        Parameters(input): Parameters<GenerateImageInput>,
+    ) -> CallToolResult {
+        let server = self.clone();
+        let started = self.jobs.submit(move |_| async move {
+            let info = tools::generate_image::run(&server, input).await?;
+            serde_json::to_value(info).map_err(|e| crate::error::Error::InvalidInput(e.to_string()))
+        });
+        to_result(Ok(started))
+    }
+
+    #[tool(
+        description = "Create a silent video from nothing: a solid colour or gradient of a given size, length and fps, saved as mp4 (or webm). Procedural only, no AI generation. Use it for title-card backgrounds or placeholders; add text with video_edit or join it to other clips with video_compose. `fill` is {type:'solid',color:'#RRGGBB'} or {type:'gradient',from,to,direction:'horizontal'|'vertical'}. Runs as a job: this returns a job_id immediately; call job_status with wait_secs for progress and the result (new asset_id, path, dimensions, duration, size)."
+    )]
+    async fn generate_video(
+        &self,
+        Parameters(input): Parameters<GenerateVideoInput>,
+    ) -> CallToolResult {
+        let server = self.clone();
+        let started = self.jobs.submit(move |progress| async move {
+            let info = tools::generate_video::run(&server, input, progress).await?;
             serde_json::to_value(info).map_err(|e| crate::error::Error::InvalidInput(e.to_string()))
         });
         to_result(Ok(started))

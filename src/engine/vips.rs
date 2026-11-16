@@ -13,7 +13,11 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::process::Command;
 
-use super::{Engines, stderr_tail};
+use super::{
+    Engines,
+    generate::{Fill, GradientDirection},
+    stderr_tail,
+};
 use crate::{
     assets::AssetRef,
     error::{Error, Result},
@@ -513,15 +517,230 @@ async fn edit_in(engines: &Engines, work: &Path, job: &EditJob<'_>) -> Result<()
         job.progress
             .set((index + 1) as f32 / (job.ops.len() + 1) as f32);
     }
-    let bands = if job.export.format == ImageFormat::Jpeg {
-        header_bands(engines, &cur).await?
+    finish(engines, work, &cur, job.output, &job.export).await
+}
+
+/// Export the final intermediate to `output`.
+async fn finish(
+    engines: &Engines,
+    work: &Path,
+    cur: &Path,
+    output: &Path,
+    export: &Export,
+) -> Result<()> {
+    let bands = if export.format == ImageFormat::Jpeg {
+        header_bands(engines, cur).await?
     } else {
         0
     };
-    for step in export_steps(&cur, job.output, bands, &job.export) {
+    for step in export_steps(cur, output, bands, export) {
         run_vips(engines, work, step).await?;
     }
     Ok(())
+}
+
+/// A grid of images: each fitted inside a `cell` box, centred, on a background.
+pub struct ComposeJob<'a> {
+    pub inputs: &'a [PathBuf],
+    pub columns: u32,
+    pub cell: (u32, u32),
+    /// Pixels between cells (and nothing around the outside).
+    pub gap: u32,
+    /// `#RRGGBB`.
+    pub background: &'a str,
+    pub export: Export,
+    pub output: &'a Path,
+}
+
+pub const MAX_COMPOSE_IMAGES: usize = 64;
+
+/// Size of the finished grid.
+pub fn grid_size(n: usize, columns: u32, cell: (u32, u32), gap: u32) -> (u64, u64) {
+    let cols = columns.min(n as u32).max(1) as u64;
+    let rows = (n as u64).div_ceil(cols);
+    let (cw, ch, g) = (cell.0 as u64, cell.1 as u64, gap as u64);
+    (cols * cw + (cols - 1) * g, rows * ch + (rows - 1) * g)
+}
+
+/// Validate a grid job and return the background as `"R G B"`.
+fn check_compose(job: &ComposeJob) -> Result<String> {
+    let n = job.inputs.len();
+    if n == 0 || n > MAX_COMPOSE_IMAGES {
+        return Err(bad(format!(
+            "give between 1 and {MAX_COMPOSE_IMAGES} images"
+        )));
+    }
+    check_dim("cell_width", job.cell.0)?;
+    check_dim("cell_height", job.cell.1)?;
+    if job.columns == 0 {
+        return Err(bad("columns must be at least 1"));
+    }
+    if job.gap > 1000 {
+        return Err(bad("gap must be at most 1000"));
+    }
+    let (w, h) = grid_size(n, job.columns, job.cell, job.gap);
+    if w > MAX_DIM as u64 || h > MAX_DIM as u64 {
+        return Err(bad(format!(
+            "the grid would be {w}x{h}, larger than the {MAX_DIM}px limit"
+        )));
+    }
+    parse_color(job.background)
+}
+
+/// Step 1 (cwd is the scratch dir): fit every input inside the cell box into `t{i}.v`.
+/// thumbnail also applies EXIF rotation.
+pub fn thumb_steps(job: &ComposeJob) -> Result<Vec<Args>> {
+    check_compose(job)?;
+    Ok(job
+        .inputs
+        .iter()
+        .enumerate()
+        .map(|(i, input)| {
+            args![
+                "thumbnail",
+                s(input),
+                format!("t{i}.v"),
+                job.cell.0,
+                "--height",
+                job.cell.1
+            ]
+        })
+        .collect())
+}
+
+/// Step 2: given the band count of each `t{i}.v`, put transparency on the background
+/// (`flatten` only accepts images that have alpha) and join the cells into `grid.v`.
+/// ponytail: grey+alpha cells are flattened onto the background's red channel only.
+pub fn join_steps(job: &ComposeJob, bands: &[u32]) -> Result<Vec<Args>> {
+    let bg = check_compose(job)?;
+    let mut steps = vec![];
+    let mut names = vec![];
+    for (i, b) in bands.iter().enumerate() {
+        let (t, c) = (format!("t{i}.v"), format!("c{i}.v"));
+        match b {
+            4 => steps.push(args!["flatten", t, c.clone(), "--background", bg.clone()]),
+            2 => steps.push(args![
+                "flatten",
+                t,
+                c.clone(),
+                "--background",
+                bg.split(' ').next().unwrap_or("255")
+            ]),
+            _ => steps.push(args!["copy", t, c.clone()]),
+        }
+        names.push(c);
+    }
+    // arrayjoin crashes (SIGSEGV, vips 8.14) on a single input.
+    if names.len() == 1 {
+        steps.push(args!["copy", names[0].clone(), "grid.v"]);
+        return Ok(steps);
+    }
+    steps.push(args![
+        "arrayjoin",
+        names.join(" "),
+        "grid.v",
+        "--across",
+        job.columns.min(job.inputs.len() as u32),
+        "--shim",
+        job.gap,
+        "--background",
+        bg,
+        "--halign",
+        "centre",
+        "--valign",
+        "centre"
+    ]);
+    Ok(steps)
+}
+
+/// Run a grid composition; scratch files live in a temp dir that is always removed.
+pub async fn compose(engines: &Engines, sandbox: &Sandbox, job: ComposeJob<'_>) -> Result<()> {
+    for p in job.inputs.iter().map(PathBuf::as_path).chain([job.output]) {
+        check_vips_path(p)?;
+    }
+    let thumbs = thumb_steps(&job)?;
+    let work = sandbox.make_temp_dir().await?;
+    let _cleanup = Scratch::new(&work);
+    check_vips_path(&work)?;
+    for step in thumbs {
+        run_vips(engines, &work, step).await?;
+    }
+    let mut bands = vec![];
+    for i in 0..job.inputs.len() {
+        bands.push(header_bands(engines, &work.join(format!("t{i}.v"))).await?);
+    }
+    for step in join_steps(&job, &bands)? {
+        run_vips(engines, &work, step).await?;
+    }
+    finish(
+        engines,
+        &work,
+        &work.join("grid.v"),
+        job.output,
+        &job.export,
+    )
+    .await
+}
+
+/// Commands that paint `fill` into `fill.v` (8-bit RGB, cwd is the scratch dir): the x or y
+/// coordinate of every pixel scaled linearly from one colour to the other.
+pub fn fill_steps(fill: &Fill, width: u32, height: u32) -> Result<Vec<Args>> {
+    check_dim("width", width)?;
+    check_dim("height", height)?;
+    let rgb = |c: &str| -> Result<[f64; 3]> {
+        let v: Vec<f64> = parse_color(c)?
+            .split(' ')
+            .filter_map(|n| n.parse().ok())
+            .collect();
+        Ok([v[0], v[1], v[2]])
+    };
+    let (from, to, vertical) = match fill {
+        Fill::Solid { color } => (rgb(color)?, rgb(color)?, false),
+        Fill::Gradient {
+            from,
+            to,
+            direction,
+        } => (
+            rgb(from)?,
+            rgb(to)?,
+            *direction == GradientDirection::Vertical,
+        ),
+    };
+    let span = if vertical { height } else { width };
+    let div = (span.max(2) - 1) as f64;
+    let join = |v: [f64; 3]| format!("{} {} {}", v[0], v[1], v[2]);
+    let k = [0, 1, 2].map(|i| (to[i] - from[i]) / div);
+    Ok(vec![
+        args!["xyz", "xy.v", width, height],
+        args![
+            "extract_band",
+            "xy.v",
+            "axis.v",
+            if vertical { 1 } else { 0 }
+        ],
+        args!["linear", "axis.v", "lin.v", join(k), join(from)],
+        args!["cast", "lin.v", "fill.v", "uchar"],
+    ])
+}
+
+/// Render a procedural fill to `output`.
+pub async fn render_fill(
+    engines: &Engines,
+    sandbox: &Sandbox,
+    fill: &Fill,
+    (width, height): (u32, u32),
+    export: &Export,
+    output: &Path,
+) -> Result<()> {
+    check_vips_path(output)?;
+    let steps = fill_steps(fill, width, height)?;
+    let work = sandbox.make_temp_dir().await?;
+    let _cleanup = Scratch::new(&work);
+    check_vips_path(&work)?;
+    for step in steps {
+        run_vips(engines, &work, step).await?;
+    }
+    finish(engines, &work, &work.join("fill.v"), output, export).await
 }
 
 async fn run_vips(engines: &Engines, cwd: &Path, args: Args) -> Result<()> {
@@ -570,6 +789,123 @@ async fn run(bin: &Path, program: &'static str, cwd: &Path, args: Args) -> Resul
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn grid_sizes() {
+        assert_eq!(grid_size(5, 3, (100, 50), 10), (320, 110));
+        assert_eq!(grid_size(2, 5, (100, 50), 10), (210, 50)); // fewer images than columns
+        assert_eq!(grid_size(1, 1, (7, 9), 0), (7, 9));
+    }
+
+    #[test]
+    fn compose_command_construction() {
+        let inputs = [PathBuf::from("/w/a.png"), PathBuf::from("/w/b.jpg")];
+        let job = ComposeJob {
+            inputs: &inputs,
+            columns: 2,
+            cell: (100, 80),
+            gap: 4,
+            background: "#102030",
+            export: Export {
+                format: ImageFormat::Png,
+                quality: 90,
+                strip_metadata: true,
+            },
+            output: Path::new("/w/o.png"),
+        };
+        let thumbs = thumb_steps(&job).unwrap();
+        assert_eq!(
+            thumbs[0],
+            ["thumbnail", "/w/a.png", "t0.v", "100", "--height", "80"]
+        );
+        assert_eq!(thumbs[1][1], "/w/b.jpg");
+        // alpha is flattened, plain RGB is copied, grey+alpha uses one background value
+        let steps = join_steps(&job, &[4, 3]).unwrap();
+        assert_eq!(
+            steps[0],
+            ["flatten", "t0.v", "c0.v", "--background", "16 32 48"]
+        );
+        assert_eq!(steps[1], ["copy", "t1.v", "c1.v"]);
+        assert_eq!(join_steps(&job, &[2, 1]).unwrap()[0][4], "16");
+        assert_eq!(
+            join_steps(&job, &[3]).unwrap()[1],
+            ["copy", "c0.v", "grid.v"]
+        );
+        assert_eq!(
+            steps[2],
+            [
+                "arrayjoin",
+                "c0.v c1.v",
+                "grid.v",
+                "--across",
+                "2",
+                "--shim",
+                "4",
+                "--background",
+                "16 32 48",
+                "--halign",
+                "centre",
+                "--valign",
+                "centre"
+            ]
+        );
+        let with = |f: &dyn Fn(&mut ComposeJob)| {
+            let mut j = ComposeJob {
+                inputs: &inputs,
+                background: "#102030",
+                output: Path::new("/w/o"),
+                ..job
+            };
+            f(&mut j);
+            thumb_steps(&j).is_err()
+        };
+        assert!(with(&|j| j.columns = 0));
+        assert!(with(&|j| j.cell = (0, 5)));
+        assert!(with(&|j| j.gap = 1001));
+        assert!(with(&|j| j.background = "red"));
+        assert!(with(&|j| j.cell = (MAX_DIM, 10)));
+        assert!(with(&|j| j.inputs = &[]));
+    }
+
+    #[test]
+    fn fill_command_construction() {
+        let g = Fill::Gradient {
+            from: "#000000".into(),
+            to: "#ff0000".into(),
+            direction: GradientDirection::Horizontal,
+        };
+        let steps = fill_steps(&g, 256, 10).unwrap();
+        assert_eq!(steps[0], ["xyz", "xy.v", "256", "10"]);
+        assert_eq!(steps[1], ["extract_band", "xy.v", "axis.v", "0"]);
+        assert_eq!(steps[2], ["linear", "axis.v", "lin.v", "1 0 0", "0 0 0"]);
+        assert_eq!(steps[3], ["cast", "lin.v", "fill.v", "uchar"]);
+        let v = Fill::Gradient {
+            from: "#000000".into(),
+            to: "#ff0000".into(),
+            direction: GradientDirection::Vertical,
+        };
+        let steps = fill_steps(&v, 10, 256).unwrap();
+        assert_eq!(steps[1][3], "1");
+        let solid = Fill::Solid {
+            color: "#0a0b0c".into(),
+        };
+        assert_eq!(
+            fill_steps(&solid, 1, 1).unwrap()[2][3..],
+            ["0 0 0", "10 11 12"]
+        );
+        assert!(fill_steps(&solid, 0, 5).is_err());
+        assert!(fill_steps(&solid, MAX_DIM + 1, 5).is_err());
+        assert!(
+            fill_steps(
+                &Fill::Solid {
+                    color: "red".into()
+                },
+                5,
+                5
+            )
+            .is_err()
+        );
+    }
     use super::*;
 
     fn ctx<'a>(bands: u32, overlay: Option<&'a Path>) -> StepCtx<'a> {
