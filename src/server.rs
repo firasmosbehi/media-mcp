@@ -20,6 +20,7 @@ use crate::{
         jobs::{JobCancelInput, JobStatusInput},
         preview::PreviewInput,
         probe::ProbeInput,
+        run_ffmpeg::RunFfmpegInput,
         to_result,
         video_compose::VideoComposeInput,
         video_edit::VideoEditInput,
@@ -144,6 +145,18 @@ impl MediaServer {
         let server = self.clone();
         let started = self.jobs.submit(move |progress| async move {
             let info = tools::generate_video::run(&server, input, progress).await?;
+            serde_json::to_value(info).map_err(|e| crate::error::Error::InvalidInput(e.to_string()))
+        });
+        to_result(Ok(started))
+    }
+
+    #[tool(
+        description = "Escape hatch: run ffmpeg with your own arguments when no other tool can do the job (animated GIFs, audio filters not covered by audio_edit, special codecs, ...). Prefer image_edit, video_edit, audio_edit and video_compose; use this only when they cannot. Inputs are assets passed in `inputs` and referenced in `args` as `-i {in0}`, `-i {in1}`; the last argument must be `{out}`; `output_format` picks the file type. The server adds its own safety flags, caps duration and size, and rejects network URLs, file-reading filters and `-y`. Returns the new asset_id, path and media info. Runs as a job: this returns a job_id immediately; call job_status with wait_secs for progress and the result; a failed run returns ffmpeg's error text so you can fix the arguments."
+    )]
+    async fn run_ffmpeg(&self, Parameters(input): Parameters<RunFfmpegInput>) -> CallToolResult {
+        let server = self.clone();
+        let started = self.jobs.submit(move |progress| async move {
+            let info = tools::run_ffmpeg::run(&server, input, progress).await?;
             serde_json::to_value(info).map_err(|e| crate::error::Error::InvalidInput(e.to_string()))
         });
         to_result(Ok(started))

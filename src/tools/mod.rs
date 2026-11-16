@@ -6,6 +6,7 @@ pub mod image_edit;
 pub mod jobs;
 pub mod preview;
 pub mod probe;
+pub mod run_ffmpeg;
 pub mod video_compose;
 pub mod video_edit;
 

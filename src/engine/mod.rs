@@ -3,6 +3,7 @@ pub mod compose;
 pub mod ffmpeg;
 pub mod generate;
 pub mod probe;
+pub mod raw;
 pub mod vips;
 
 use std::path::{Path, PathBuf};

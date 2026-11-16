@@ -2,7 +2,7 @@
 
 An MCP server (Rust, stdio) that lets an AI client edit and generate photos and videos by orchestrating ffmpeg and libvips.
 
-**Status:** early development (phase 6 of [the plan](docs/PLAN.md): photo tools, jobs, `video_edit`, `audio_edit`, `video_compose`, `image_compose` and procedural `generate_image`/`generate_video` work; hardware encoders and `run_ffmpeg` are next). See [docs/PLAN.md](docs/PLAN.md) and [CLAUDE.md](CLAUDE.md).
+**Status:** early development (phase 7 of [the plan](docs/PLAN.md): photo tools, jobs, `video_edit`, `audio_edit`, `video_compose`, `image_compose` and procedural `generate_image`/`generate_video` and `run_ffmpeg` work; hardware encoders and the release are next). See [docs/PLAN.md](docs/PLAN.md) and [CLAUDE.md](CLAUDE.md).
 
 ## Tools
 
@@ -17,6 +17,7 @@ An MCP server (Rust, stdio) that lets an AI client edit and generate photos and 
 | `image_compose` | Arrange photos into a grid / contact sheet (columns, cell size, gap, background); each photo is fitted and centred in its cell. Exports png/jpeg/webp. Runs as a job. |
 | `generate_image` | Create an image from nothing: a solid colour or linear gradient of a given size. Procedural only (no AI provider yet). Runs as a job. |
 | `generate_video` | Create a silent solid-colour or gradient video of a given size, length and fps (mp4/webm). Procedural only. Runs as a job. |
+| `run_ffmpeg` | Escape hatch: run ffmpeg with your own argument array. Inputs are assets (`-i {in0}`), the last argument is `{out}`; the server forces its safety flags and rejects URLs, file-reading filters, absolute paths, `..`, `-y` and `tee`. Runs as a job. |
 | `job_status` | State, progress and result/error of a job. `wait_secs` (max 30) blocks until it finishes; sends MCP progress notifications if the request has a progress token. |
 | `job_cancel` | Cancel a queued or running job: kills the process, deletes partial output. |
 
