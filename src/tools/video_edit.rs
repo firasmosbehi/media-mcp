@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use super::{AssetInfo, image_edit::valid_stem};
+use super::{AssetInfo, Output};
 use crate::{
     assets::AssetRef,
     engine::{
@@ -10,7 +10,6 @@ use crate::{
     },
     error::{Error, Result},
     jobs::Progress,
-    sandbox::Scratch,
     server::MediaServer,
 };
 
@@ -32,9 +31,10 @@ pub struct VideoExportSettings {
     pub format: Option<VideoFormat>,
     /// Quality as constant rate factor, 0-51, lower is better and bigger. Default 23 (mp4) or 31 (webm).
     pub crf: Option<u8>,
-    /// Copy the streams instead of re-encoding: instant and lossless, but only allowed with no
-    /// operations or a single `trim`, and the cut snaps to the nearest earlier keyframe.
-    /// Default false (frame-accurate re-encode).
+    /// Copy the streams instead of re-encoding: instant and lossless. Only allowed when no
+    /// re-encoding is needed: for video_edit no operations or a single `trim` (the cut snaps
+    /// to the nearest earlier keyframe); for video_compose clips that are all videos with the
+    /// same codecs, size and fps. Default false (re-encode).
     #[serde(default)]
     pub stream_copy: bool,
     /// Remove metadata (title, GPS, ...) from the output; default true.
@@ -65,6 +65,26 @@ impl Default for VideoExportSettings {
     }
 }
 
+impl VideoExportSettings {
+    /// Apply defaults and validate the encoder settings.
+    pub fn resolve(&self) -> Result<Export> {
+        let format = self.format.unwrap_or(VideoFormat::Mp4);
+        let crf = self.crf.unwrap_or(match format {
+            VideoFormat::Mp4 => 23,
+            VideoFormat::Webm => 31,
+        });
+        if crf > 51 {
+            return Err(Error::InvalidInput("crf must be 0-51".into()));
+        }
+        Ok(Export {
+            format,
+            crf,
+            strip_metadata: self.strip_metadata,
+            stream_copy: self.stream_copy,
+        })
+    }
+}
+
 pub async fn run(
     server: &MediaServer,
     input: VideoEditInput,
@@ -78,39 +98,20 @@ pub async fn run(
             src_info.kind
         )));
     }
-    let format = input.export.format.unwrap_or(VideoFormat::Mp4);
-    let crf = input.export.crf.unwrap_or(match format {
-        VideoFormat::Mp4 => 23,
-        VideoFormat::Webm => 31,
-    });
-    if crf > 51 {
-        return Err(Error::InvalidInput("crf must be 0-51".into()));
-    }
+    let export = input.export.resolve()?;
     let mut overlays = vec![];
     for op in &input.operations {
         if let VideoOp::Overlay { source, .. } = op {
             overlays.push(source.resolve(&server.assets).await?.1);
         }
     }
-
-    let sandbox = server.assets.sandbox();
-    let stem = match &input.export.output_name {
-        Some(n) if valid_stem(n) => n.clone(),
-        Some(n) => return Err(Error::InvalidInput(format!("invalid output_name: {n}"))),
-        None => uuid::Uuid::new_v4().to_string(),
-    };
-    let ext = format.ext();
-    let dest = sandbox.new_path(&format!("{stem}.{ext}")).await?;
-    if !input.export.overwrite && tokio::fs::try_exists(&dest).await.unwrap_or(false) {
-        return Err(Error::InvalidInput(format!(
-            "{stem}.{ext} already exists; pass overwrite: true to replace it"
-        )));
-    }
-    // Written under a temp name and renamed on success: a failure or cancel never leaves a partial asset.
-    let tmp = sandbox
-        .new_path(&format!(".{}.tmp.{ext}", uuid::Uuid::new_v4()))
-        .await?;
-    let scratch = Scratch::new(&tmp);
+    let out = Output::prepare(
+        server,
+        input.export.output_name.as_deref(),
+        input.export.overwrite,
+        export.format.ext(),
+    )
+    .await?;
     let spec = Spec {
         input: &src,
         input_secs: src_info.duration_secs.unwrap_or(0.0),
@@ -118,16 +119,11 @@ pub async fn run(
         fps: src_info.fps,
         overlays,
         ops: &input.operations,
-        export: Export {
-            format,
-            crf,
-            strip_metadata: input.export.strip_metadata,
-            stream_copy: input.export.stream_copy,
-        },
-        output: &tmp,
+        export,
+        output: &out.tmp,
     };
-    ffmpeg::edit(&server.engines, sandbox, spec, &progress).await?;
-    let info = probe::probe(&server.engines, &tmp).await?;
+    ffmpeg::edit(&server.engines, server.assets.sandbox(), spec, &progress).await?;
+    let info = probe::probe(&server.engines, &out.tmp).await?;
     if info.width.unwrap_or(0) > MAX_DIM || info.height.unwrap_or(0) > MAX_DIM {
         return Err(Error::InvalidInput(format!(
             "result is {}x{}, larger than the {MAX_DIM}px limit",
@@ -135,14 +131,10 @@ pub async fn run(
             info.height.unwrap_or(0)
         )));
     }
-    tokio::fs::rename(&tmp, &dest)
-        .await
-        .map_err(|e| Error::io(&dest, e))?;
-    scratch.disarm();
-    let asset_id = server.assets.register(&dest).await?;
+    let (asset_id, path) = out.commit(server).await?;
     Ok(AssetInfo {
         asset_id,
-        path: dest,
+        path,
         info,
     })
 }

@@ -10,12 +10,15 @@ use crate::{
     engine::Engines,
     jobs::Jobs,
     tools::{
-        self, error_result,
+        self,
+        audio_edit::AudioEditInput,
+        error_result,
         image_edit::ImageEditInput,
         jobs::{JobCancelInput, JobStatusInput},
         preview::PreviewInput,
         probe::ProbeInput,
         to_result,
+        video_compose::VideoComposeInput,
         video_edit::VideoEditInput,
     },
 };
@@ -66,6 +69,33 @@ impl MediaServer {
         let server = self.clone();
         let started = self.jobs.submit(move |progress| async move {
             let info = tools::video_edit::run(&server, input, progress).await?;
+            serde_json::to_value(info).map_err(|e| crate::error::Error::InvalidInput(e.to_string()))
+        });
+        to_result(Ok(started))
+    }
+
+    #[tool(
+        description = "Edit audio, or extract the audio track of a video, with an ordered list of operations (trim, volume, fade_in, fade_out, speed) and save it as a new audio asset (mp3, wav or m4a); the source is never modified. Pass asset_id or import_path for an audio file or a video. Operations run in order, so fade_out after a trim fades the end of the trimmed clip; with no operations it just extracts or converts. Use video_edit to change a video's picture and sound together. Runs as a job: this returns a job_id immediately; call job_status with wait_secs for the result (new asset_id, path, duration, size)."
+    )]
+    async fn audio_edit(&self, Parameters(input): Parameters<AudioEditInput>) -> CallToolResult {
+        let server = self.clone();
+        let started = self.jobs.submit(move |progress| async move {
+            let info = tools::audio_edit::run(&server, input, progress).await?;
+            serde_json::to_value(info).map_err(|e| crate::error::Error::InvalidInput(e.to_string()))
+        });
+        to_result(Ok(started))
+    }
+
+    #[tool(
+        description = "Join several videos and still images into one video, in order: a concatenation or a photo slideshow. Each clip is an asset_id or import_path; images show for image_secs (default 3) or their own secs, videos can be shortened with secs. Clips are scaled to fit the output width/height (default: the first clip's size, padded with black) and fps (default 30); sound is kept and silent clips are padded so audio stays in sync. `export` picks mp4 or webm, crf, an optional output_name, and `stream_copy: true` for an instant lossless join when every clip is a video with identical codecs, size and fps. Use video_edit to change a single video. Runs as a job: this returns a job_id immediately; call job_status with wait_secs for progress and the result (new asset_id, path, dimensions, duration, size). Check the result with preview."
+    )]
+    async fn video_compose(
+        &self,
+        Parameters(input): Parameters<VideoComposeInput>,
+    ) -> CallToolResult {
+        let server = self.clone();
+        let started = self.jobs.submit(move |progress| async move {
+            let info = tools::video_compose::run(&server, input, progress).await?;
             serde_json::to_value(info).map_err(|e| crate::error::Error::InvalidInput(e.to_string()))
         });
         to_result(Ok(started))

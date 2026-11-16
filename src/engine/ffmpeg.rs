@@ -145,6 +145,7 @@ pub struct Spec<'a> {
     pub output: &'a Path,
 }
 
+#[derive(Debug)]
 pub struct Compiled {
     pub args: Args,
     /// (file name, content): user text, written into ffmpeg's working directory and read by
@@ -154,11 +155,11 @@ pub struct Compiled {
     pub out_secs: f64,
 }
 
-fn bad(msg: impl Into<String>) -> Error {
+pub(super) fn bad(msg: impl Into<String>) -> Error {
     Error::InvalidInput(msg.into())
 }
 
-fn s(p: &Path) -> String {
+pub(super) fn s(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
@@ -169,7 +170,7 @@ fn check_dim(name: &str, v: u32) -> Result<()> {
     Ok(())
 }
 
-fn check_range(name: &str, v: f64, lo: f64, hi: f64) -> Result<()> {
+pub(super) fn check_range(name: &str, v: f64, lo: f64, hi: f64) -> Result<()> {
     if !(v.is_finite() && (lo..=hi).contains(&v)) {
         return Err(bad(format!("{name} must be between {lo} and {hi}")));
     }
@@ -177,7 +178,7 @@ fn check_range(name: &str, v: f64, lo: f64, hi: f64) -> Result<()> {
 }
 
 /// Validate a trim and return (start, end) with `end` clamped to `len`.
-fn trim_bounds(start: Option<f64>, end: Option<f64>, len: f64) -> Result<(f64, f64)> {
+pub(super) fn trim_bounds(start: Option<f64>, end: Option<f64>, len: f64) -> Result<(f64, f64)> {
     if start.is_none() && end.is_none() {
         return Err(bad("trim needs start_secs, end_secs or both"));
     }
@@ -278,7 +279,7 @@ fn hex_color(c: &str) -> Result<String> {
     Ok(format!("0x{}", c.trim_start_matches('#')))
 }
 
-fn base_args() -> Args {
+pub(super) fn base_args() -> Args {
     ["-nostdin", "-hide_banner", "-loglevel", "error", "-nostats"]
         .iter()
         .chain(&["-progress", "pipe:1"])
@@ -286,12 +287,12 @@ fn base_args() -> Args {
         .collect()
 }
 
-fn push_input(a: &mut Args, path: &Path) {
+pub(super) fn push_input(a: &mut Args, path: &Path) {
     a.extend(["-protocol_whitelist".into(), "file,pipe".into()]);
     a.extend(["-i".into(), s(path)]);
 }
 
-fn encoder_args(e: &Export) -> Args {
+pub(super) fn encoder_args(e: &Export) -> Args {
     let crf = e.crf.to_string();
     let v: &[&str] = match e.format {
         VideoFormat::Mp4 => &[
@@ -556,15 +557,24 @@ pub fn parse_progress(line: &str, total_secs: f64) -> Option<f32> {
     Some(((us / 1.0e6 / total_secs) as f32).clamp(0.0, 0.99))
 }
 
-/// Compile and run an edit. Scratch files live in a temp dir that is removed on every exit,
-/// including cancellation.
+/// Compile and run an edit.
 pub async fn edit(
     engines: &Engines,
     sandbox: &Sandbox,
     sp: Spec<'_>,
     progress: &Progress,
 ) -> Result<()> {
-    let compiled = compile(&sp)?;
+    execute(engines, sandbox, compile(&sp)?, progress).await
+}
+
+/// Run an already compiled command. Scratch files live in a temp dir that is removed on every
+/// exit, including cancellation.
+pub async fn execute(
+    engines: &Engines,
+    sandbox: &Sandbox,
+    compiled: Compiled,
+    progress: &Progress,
+) -> Result<()> {
     let work = sandbox.make_temp_dir().await?;
     let _cleanup = Scratch::new(&work);
     for (name, content) in &compiled.text_files {
@@ -590,7 +600,7 @@ pub async fn extract_frame(
     run(engines, Path::new("."), a, 0.0, &Progress::default()).await
 }
 
-async fn run(
+pub(super) async fn run(
     engines: &Engines,
     cwd: &Path,
     args: Args,

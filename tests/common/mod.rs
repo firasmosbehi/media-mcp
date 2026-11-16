@@ -207,3 +207,16 @@ pub fn debris(ws: &Path) -> Vec<String> {
         })
         .unwrap_or_default()
 }
+
+/// Mean loudness in dB of a file's audio (ffmpeg `volumedetect`); about -91 for silence.
+pub fn mean_volume_db(path: &Path) -> f64 {
+    let out = Command::new("ffmpeg")
+        .args(["-nostdin", "-hide_banner", "-i"])
+        .arg(path)
+        .args(["-af", "volumedetect", "-vn", "-f", "null", "-"])
+        .output()
+        .unwrap();
+    let log = String::from_utf8_lossy(&out.stderr).into_owned();
+    let tail = log.split("mean_volume:").nth(1).expect(&log);
+    tail.split_whitespace().next().unwrap().parse().unwrap()
+}
